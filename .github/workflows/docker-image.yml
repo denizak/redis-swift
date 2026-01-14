@@ -7,12 +7,57 @@ on:
     branches: [ "main" ]
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    - name: Setup Swift
+      uses: swift-actions/setup-swift@v2
+      with:
+        swift-version: "6.0"
+    - name: Run tests
+      run: swift test
 
   build:
-
+    needs: test
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
+    
     - name: Build the Docker image
-      run: docker build . --file Dockerfile --tag my-image-name:$(date +%s)
+      run: docker build . --file Dockerfile --tag redis-swift:${{ github.sha }}
+    
+    - name: Run container in background
+      run: docker run -d --name redis-test -p 6379:6379 redis-swift:${{ github.sha }}
+    
+    - name: Wait for server to start
+      run: sleep 3
+    
+    - name: Test PING command
+      run: |
+        response=$(printf "PING\r\n" | nc localhost 6379)
+        if [[ $response == *"PONG"* ]]; then
+          echo "✓ Server responding to PING"
+        else
+          echo "✗ Server not responding correctly"
+          docker logs redis-test
+          exit 1
+        fi
+    
+    - name: Test SET/GET commands
+      run: |
+        printf "*3\r\n\$3\r\nSET\r\n\$3\r\nfoo\r\n\$3\r\nbar\r\n" | nc localhost 6379
+        response=$(printf "*2\r\n\$3\r\nGET\r\n\$3\r\nfoo\r\n" | nc localhost 6379)
+        if [[ $response == *"bar"* ]]; then
+          echo "✓ SET/GET working"
+        else
+          echo "✗ SET/GET failed"
+          docker logs redis-test
+          exit 1
+        fi
+    
+    - name: Stop container
+      if: always()
+      run: docker stop redis-test && docker rm redis-test
