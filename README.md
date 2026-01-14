@@ -156,6 +156,14 @@ printf "PING\n" | nc 127.0.0.1 6379
 
 ## Next steps (optional)
 
-- Add `EXPIRE` and `TTL` support with a timestamp store.
-- Implement `MGET` and `MSET`.
-- Add a simple RDB-like snapshot on shutdown.
+Want to add more features? Here are some ideas:
+
+- **Persistence**: Save/load snapshots to disk (RDB-like format)
+- **Pub/Sub**: `PUBLISH`, `SUBSCRIBE`, `UNSUBSCRIBE` channels
+- **Hashes**: `HSET`, `HGET`, `HDEL`, `HGETALL` for structured data
+- **Sets**: `SADD`, `SMEMBERS`, `SISMEMBER`, `SINTER`, `SUNION`
+- **Sorted Sets**: `ZADD`, `ZRANGE`, `ZRANK` with scores
+- **String operations**: `APPEND`, `STRLEN`, `GETRANGE`, `SETRANGE`
+- **Bit operations**: `SETBIT`, `GETBIT`, `BITCOUNT`
+- **Transactions**: `MULTI`, `EXEC`, `DISCARD`
+- **Lua scripting**: `EVAL` for server-side scripts
