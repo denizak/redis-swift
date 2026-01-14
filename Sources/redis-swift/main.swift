@@ -1,4 +1,4 @@
-import RedisCore
+import RedisServer
 
 @available(macOS 10.14, *)
 @main

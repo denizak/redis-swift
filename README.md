@@ -23,8 +23,8 @@ This is a **minimal Redis-like server** written in Swift. It supports a tiny sub
 ## Step-by-step learning path
 
 ### 1) Start a TCP server
-- The server uses `Network` (`NWListener`) to accept TCP connections.
-- Look for the `listener` setup near the bottom of the file.
+- The server uses SwiftNIO (`ServerBootstrap`) to accept TCP connections.
+- Look for `RedisHandler` and `Server.run()`.
 
 ### 2) RESP basics (Redis Serialization Protocol)
 - A command comes in as an array of bulk strings:
@@ -51,7 +51,7 @@ This is a **minimal Redis-like server** written in Swift. It supports a tiny sub
 - A serial `DispatchQueue` makes access thread-safe.
 
 ### 5) Command handling
-- Commands are handled in `Client.handle(command:)`.
+- Commands are handled in `RedisHandler.handle(command:)`.
 - Each command maps to a RESP response.
 
 ### 6) Basic key expiration
@@ -60,7 +60,7 @@ This is a **minimal Redis-like server** written in Swift. It supports a tiny sub
 - Expired keys are cleaned on access (lazy expiration).
 
 ### 7) Putting it together
-- The `Client` reads bytes from the socket, parses commands, and sends RESP replies.
+- `RedisHandler` reads bytes from the socket, parses commands, and sends RESP replies.
 - Multiple clients can connect at once.
 
 ## Try it
@@ -70,6 +70,39 @@ Build and run the server:
 ```bash
 swift build
 swift run
+```
+
+## Linux
+
+Build and run on Linux:
+
+```bash
+swift build
+swift run
+```
+
+## Docker
+
+Build and run with Docker:
+
+```bash
+docker build -t mini-redis-swift .
+docker run --rm -p 6379:6379 mini-redis-swift
+```
+
+### Deploy & use in Docker
+
+Run the container and connect from your host:
+
+```bash
+docker run --rm -p 6379:6379 mini-redis-swift
+redis-cli -p 6379 PING
+```
+
+Or use netcat from your host:
+
+```bash
+printf "PING\n" | nc 127.0.0.1 6379
 ```
 
 ## Test harness
