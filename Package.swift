@@ -8,10 +8,18 @@ let package = Package(
     platforms: [
         .macOS(.v10_14)
     ],
+    products: [
+        .library(name: "RedisCore", targets: ["RedisCore"]),
+        .executable(name: "redis-swift", targets: ["redis-swift"])
+    ],
     targets: [
-        // Targets are the basic building blocks of a package, defining a module or a test suite.
-        // Targets can depend on other targets in this package and products from dependencies.
+        .target(
+            name: "RedisCore"),
         .executableTarget(
-            name: "redis-swift"),
+            name: "redis-swift",
+            dependencies: ["RedisCore"]),
+        .testTarget(
+            name: "RedisCoreTests",
+            dependencies: ["RedisCore"])
     ]
 )

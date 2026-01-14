@@ -13,6 +13,8 @@ This is a **minimal Redis-like server** written in Swift. It supports a tiny sub
 - `INCR key`
 - `EXPIRE key seconds`
 - `TTL key`
+- `MSET key value [key value ...]`
+- `MGET key [key ...]`
 - `QUIT`
 
 ## Step-by-step learning path
@@ -67,6 +69,14 @@ swift build
 swift run
 ```
 
+## Test harness
+
+Run the unit tests:
+
+```bash
+swift test
+```
+
 Test with redis-cli (if installed):
 
 ```bash
@@ -75,6 +85,8 @@ redis-cli -p 6379 SET foo bar
 redis-cli -p 6379 GET foo
 redis-cli -p 6379 EXPIRE foo 5
 redis-cli -p 6379 TTL foo
+redis-cli -p 6379 MSET a 1 b 2 c 3
+redis-cli -p 6379 MGET a b c missing
 ```
 
 Test with netcat (no Redis tools required):
