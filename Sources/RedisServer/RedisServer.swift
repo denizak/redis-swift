@@ -64,8 +64,10 @@ final class RedisHandler: ChannelInboundHandler, @unchecked Sendable {
             switch parseSetOptions(options) {
             case .success(let expiry):
                 store.set(key, value: value, expiry: expiry)
-            case .failure(let errorMessage):
-                return RespResponse(data: RespEncoder.error(errorMessage), closeConnection: false)
+            case .failure(.syntaxError):
+                return RespResponse(data: RespEncoder.error("syntax error"), closeConnection: false)
+            case .failure(.invalidExpireTime):
+                return RespResponse(data: RespEncoder.error("invalid expire time in set"), closeConnection: false)
             }
 
             return RespResponse(data: RespEncoder.simple("OK"), closeConnection: false)
@@ -228,7 +230,12 @@ final class RedisHandler: ChannelInboundHandler, @unchecked Sendable {
         RespResponse(data: RespEncoder.error("wrong number of arguments for '\(name)' command"), closeConnection: false)
     }
 
-    private func parseSetOptions(_ options: [String]) -> Result<SetExpiry?, String> {
+    private enum SetOptionError: Error {
+        case syntaxError
+        case invalidExpireTime
+    }
+
+    private func parseSetOptions(_ options: [String]) -> Result<SetExpiry?, SetOptionError> {
         guard !options.isEmpty else {
             return .success(nil)
         }
@@ -240,15 +247,15 @@ final class RedisHandler: ChannelInboundHandler, @unchecked Sendable {
             switch option {
             case "EX", "PX":
                 guard index + 1 < options.count else {
-                    return .failure("syntax error")
+                    return .failure(.syntaxError)
                 }
                 guard let value = Int(options[index + 1]), value > 0 else {
-                    return .failure("invalid expire time in set")
+                    return .failure(.invalidExpireTime)
                 }
                 expiry = option == "EX" ? .seconds(value) : .milliseconds(value)
                 index += 2
             default:
-                return .failure("syntax error")
+                return .failure(.syntaxError)
             }
         }
 

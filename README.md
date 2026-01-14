@@ -6,18 +6,23 @@ This is a **minimal Redis-like server** written in Swift. It supports a tiny sub
 
 - `PING [message]`
 - `ECHO message`
-- `SET key value`
+- `SET key value [EX seconds] [PX milliseconds]` — set with optional expiration
 - `GET key`
-- `DEL key`
-- `EXISTS key`
-- `INCR key`
+- `DEL key [key ...]` — delete one or more keys
+- `EXISTS key [key ...]` — count existing keys
+- `INCR key` — increment by 1
+- `INCRBY key amount` — increment by amount
+- `DECR key` — decrement by 1
+- `DECRBY key amount` — decrement by amount
 - `EXPIRE key seconds`
 - `TTL key`
 - `MSET key value [key value ...]`
 - `MGET key [key ...]`
-- `LPUSH key value [value ...]`
+- `LPUSH key value [value ...]` — prepend to list
+- `RPUSH key value [value ...]` — append to list
+- `LLEN key` — get list length
 - `LRANGE key start stop`
-- `KEYS pattern`
+- `KEYS pattern` — supports `*`, `?`, and `[...]` glob patterns
 - `QUIT`
 
 ## Step-by-step learning path
@@ -117,15 +122,24 @@ Test with redis-cli (if installed):
 
 ```bash
 redis-cli -p 6379 PING
-redis-cli -p 6379 SET foo bar
+redis-cli -p 6379 SET foo bar EX 10
 redis-cli -p 6379 GET foo
-redis-cli -p 6379 EXPIRE foo 5
 redis-cli -p 6379 TTL foo
+redis-cli -p 6379 INCR counter
+redis-cli -p 6379 INCRBY counter 5
+redis-cli -p 6379 DECR counter
+redis-cli -p 6379 DEL foo counter
+redis-cli -p 6379 EXISTS key1 key2 key3
 redis-cli -p 6379 MSET a 1 b 2 c 3
 redis-cli -p 6379 MGET a b c missing
-redis-cli -p 6379 LPUSH mylist a b c
+redis-cli -p 6379 LPUSH mylist first second
+redis-cli -p 6379 RPUSH mylist third fourth
+redis-cli -p 6379 LLEN mylist
 redis-cli -p 6379 LRANGE mylist 0 -1
-redis-cli -p 6379 KEYS "*"
+redis-cli -p 6379 SET alpha 1
+redis-cli -p 6379 SET beta 2
+redis-cli -p 6379 KEYS "a*"
+redis-cli -p 6379 KEYS "?eta"
 ```
 
 Test with netcat (no Redis tools required):
