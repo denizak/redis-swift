@@ -32,6 +32,9 @@ public enum SetExpiry: Sendable {
 public final class KeyValueStore: @unchecked Sendable {
     private var storage: [String: String] = [:]
     private var lists: [String: [String]] = [:]
+    private var sets: [String: Set<String>] = [:]
+    private var hashes: [String: [String: String]] = [:]
+    private var sortedSets: [String: [(score: Double, member: String)]] = [:]
     private var expiries: [String: Date] = [:]
     private let queue = DispatchQueue(label: "redis-swift.store")
 
@@ -51,6 +54,9 @@ public final class KeyValueStore: @unchecked Sendable {
         queue.sync {
             storage[key] = value
             lists.removeValue(forKey: key)
+            sets.removeValue(forKey: key)
+            hashes.removeValue(forKey: key)
+            sortedSets.removeValue(forKey: key)
             expiries.removeValue(forKey: key)
         }
     }
@@ -59,6 +65,9 @@ public final class KeyValueStore: @unchecked Sendable {
         queue.sync {
             storage[key] = value
             lists.removeValue(forKey: key)
+            sets.removeValue(forKey: key)
+            hashes.removeValue(forKey: key)
+            sortedSets.removeValue(forKey: key)
             expiries.removeValue(forKey: key)
 
             if let expiry {
@@ -84,8 +93,11 @@ public final class KeyValueStore: @unchecked Sendable {
             for key in keys {
                 let removed = storage.removeValue(forKey: key)
                 let removedList = lists.removeValue(forKey: key)
+                let removedSet = sets.removeValue(forKey: key)
+                let removedHash = hashes.removeValue(forKey: key)
+                let removedZSet = sortedSets.removeValue(forKey: key)
                 expiries.removeValue(forKey: key)
-                if removed != nil || removedList != nil {
+                if removed != nil || removedList != nil || removedSet != nil || removedHash != nil || removedZSet != nil {
                     removedCount += 1
                 }
             }
@@ -105,7 +117,7 @@ public final class KeyValueStore: @unchecked Sendable {
                     remove(key)
                     continue
                 }
-                if storage[key] != nil || lists[key] != nil {
+                if storage[key] != nil || lists[key] != nil || sets[key] != nil || hashes[key] != nil || sortedSets[key] != nil {
                     count += 1
                 }
             }
@@ -288,6 +300,422 @@ public final class KeyValueStore: @unchecked Sendable {
         }
     }
 
+    // MARK: - Set Operations
+    
+    public func sadd(_ key: String, members: [String]) -> Result<Int, StoreError> {
+        queue.sync {
+            if isExpired(key) {
+                remove(key)
+            }
+            if storage[key] != nil || lists[key] != nil || hashes[key] != nil || sortedSets[key] != nil {
+                return .failure(.wrongType)
+            }
+            var set = sets[key] ?? Set<String>()
+            let originalCount = set.count
+            for member in members {
+                set.insert(member)
+            }
+            sets[key] = set
+            return .success(set.count - originalCount)
+        }
+    }
+    
+    public func smembers(_ key: String) -> Result<[String], StoreError> {
+        queue.sync {
+            if isExpired(key) {
+                remove(key)
+                return .success([])
+            }
+            if storage[key] != nil || lists[key] != nil || hashes[key] != nil || sortedSets[key] != nil {
+                return .failure(.wrongType)
+            }
+            return .success(Array(sets[key] ?? []))
+        }
+    }
+    
+    public func sismember(_ key: String, member: String) -> Result<Bool, StoreError> {
+        queue.sync {
+            if isExpired(key) {
+                remove(key)
+                return .success(false)
+            }
+            if storage[key] != nil || lists[key] != nil || hashes[key] != nil || sortedSets[key] != nil {
+                return .failure(.wrongType)
+            }
+            return .success(sets[key]?.contains(member) ?? false)
+        }
+    }
+    
+    public func srem(_ key: String, members: [String]) -> Result<Int, StoreError> {
+        queue.sync {
+            if isExpired(key) {
+                remove(key)
+                return .success(0)
+            }
+            if storage[key] != nil || lists[key] != nil || hashes[key] != nil || sortedSets[key] != nil {
+                return .failure(.wrongType)
+            }
+            guard var set = sets[key] else {
+                return .success(0)
+            }
+            var removedCount = 0
+            for member in members {
+                if set.remove(member) != nil {
+                    removedCount += 1
+                }
+            }
+            if set.isEmpty {
+                sets.removeValue(forKey: key)
+            } else {
+                sets[key] = set
+            }
+            return .success(removedCount)
+        }
+    }
+    
+    public func sinter(_ keys: [String]) -> Result<[String], StoreError> {
+        queue.sync {
+            guard !keys.isEmpty else {
+                return .success([])
+            }
+            
+            var result: Set<String>?
+            for key in keys {
+                if isExpired(key) {
+                    remove(key)
+                    return .success([])
+                }
+                if storage[key] != nil || lists[key] != nil || hashes[key] != nil || sortedSets[key] != nil {
+                    return .failure(.wrongType)
+                }
+                guard let set = sets[key] else {
+                    return .success([])
+                }
+                if result == nil {
+                    result = set
+                } else {
+                    result = result!.intersection(set)
+                }
+            }
+            return .success(Array(result ?? []))
+        }
+    }
+    
+    public func sunion(_ keys: [String]) -> Result<[String], StoreError> {
+        queue.sync {
+            guard !keys.isEmpty else {
+                return .success([])
+            }
+            
+            var result = Set<String>()
+            for key in keys {
+                if isExpired(key) {
+                    remove(key)
+                    continue
+                }
+                if storage[key] != nil || lists[key] != nil || hashes[key] != nil || sortedSets[key] != nil {
+                    return .failure(.wrongType)
+                }
+                if let set = sets[key] {
+                    result.formUnion(set)
+                }
+            }
+            return .success(Array(result))
+        }
+    }
+    
+    public func scard(_ key: String) -> Result<Int, StoreError> {
+        queue.sync {
+            if isExpired(key) {
+                remove(key)
+                return .success(0)
+            }
+            if storage[key] != nil || lists[key] != nil || hashes[key] != nil || sortedSets[key] != nil {
+                return .failure(.wrongType)
+            }
+            return .success(sets[key]?.count ?? 0)
+        }
+    }
+    
+    // MARK: - Hash Operations
+    
+    public func hset(_ key: String, field: String, value: String) -> Result<Int, StoreError> {
+        queue.sync {
+            if isExpired(key) {
+                remove(key)
+            }
+            if storage[key] != nil || lists[key] != nil || sets[key] != nil || sortedSets[key] != nil {
+                return .failure(.wrongType)
+            }
+            var hash = hashes[key] ?? [:]
+            let isNew = hash[field] == nil
+            hash[field] = value
+            hashes[key] = hash
+            return .success(isNew ? 1 : 0)
+        }
+    }
+    
+    public func hget(_ key: String, field: String) -> Result<String?, StoreError> {
+        queue.sync {
+            if isExpired(key) {
+                remove(key)
+                return .success(nil)
+            }
+            if storage[key] != nil || lists[key] != nil || sets[key] != nil || sortedSets[key] != nil {
+                return .failure(.wrongType)
+            }
+            return .success(hashes[key]?[field])
+        }
+    }
+    
+    public func hdel(_ key: String, fields: [String]) -> Result<Int, StoreError> {
+        queue.sync {
+            if isExpired(key) {
+                remove(key)
+                return .success(0)
+            }
+            if storage[key] != nil || lists[key] != nil || sets[key] != nil || sortedSets[key] != nil {
+                return .failure(.wrongType)
+            }
+            guard var hash = hashes[key] else {
+                return .success(0)
+            }
+            var removedCount = 0
+            for field in fields {
+                if hash.removeValue(forKey: field) != nil {
+                    removedCount += 1
+                }
+            }
+            if hash.isEmpty {
+                hashes.removeValue(forKey: key)
+            } else {
+                hashes[key] = hash
+            }
+            return .success(removedCount)
+        }
+    }
+    
+    public func hexists(_ key: String, field: String) -> Result<Bool, StoreError> {
+        queue.sync {
+            if isExpired(key) {
+                remove(key)
+                return .success(false)
+            }
+            if storage[key] != nil || lists[key] != nil || sets[key] != nil || sortedSets[key] != nil {
+                return .failure(.wrongType)
+            }
+            return .success(hashes[key]?[field] != nil)
+        }
+    }
+    
+    public func hgetall(_ key: String) -> Result<[(String, String)], StoreError> {
+        queue.sync {
+            if isExpired(key) {
+                remove(key)
+                return .success([])
+            }
+            if storage[key] != nil || lists[key] != nil || sets[key] != nil || sortedSets[key] != nil {
+                return .failure(.wrongType)
+            }
+            guard let hash = hashes[key] else {
+                return .success([])
+            }
+            return .success(hash.map { ($0.key, $0.value) }.sorted { $0.0 < $1.0 })
+        }
+    }
+    
+    public func hkeys(_ key: String) -> Result<[String], StoreError> {
+        queue.sync {
+            if isExpired(key) {
+                remove(key)
+                return .success([])
+            }
+            if storage[key] != nil || lists[key] != nil || sets[key] != nil || sortedSets[key] != nil {
+                return .failure(.wrongType)
+            }
+            guard let hash = hashes[key] else {
+                return .success([])
+            }
+            return .success(Array(hash.keys))
+        }
+    }
+    
+    public func hvals(_ key: String) -> Result<[String], StoreError> {
+        queue.sync {
+            if isExpired(key) {
+                remove(key)
+                return .success([])
+            }
+            if storage[key] != nil || lists[key] != nil || sets[key] != nil || sortedSets[key] != nil {
+                return .failure(.wrongType)
+            }
+            guard let hash = hashes[key] else {
+                return .success([])
+            }
+            return .success(Array(hash.values))
+        }
+    }
+    
+    public func hlen(_ key: String) -> Result<Int, StoreError> {
+        queue.sync {
+            if isExpired(key) {
+                remove(key)
+                return .success(0)
+            }
+            if storage[key] != nil || lists[key] != nil || sets[key] != nil || sortedSets[key] != nil {
+                return .failure(.wrongType)
+            }
+            return .success(hashes[key]?.count ?? 0)
+        }
+    }
+    
+    // MARK: - Sorted Set Operations
+    
+    public func zadd(_ key: String, members: [(Double, String)]) -> Result<Int, StoreError> {
+        queue.sync {
+            if isExpired(key) {
+                remove(key)
+            }
+            if storage[key] != nil || lists[key] != nil || sets[key] != nil || hashes[key] != nil {
+                return .failure(.wrongType)
+            }
+            var zset = sortedSets[key] ?? []
+            var addedCount = 0
+            
+            for (score, member) in members {
+                if let index = zset.firstIndex(where: { $0.member == member }) {
+                    zset[index].score = score
+                } else {
+                    zset.append((score: score, member: member))
+                    addedCount += 1
+                }
+            }
+            
+            zset.sort { $0.score == $1.score ? $0.member < $1.member : $0.score < $1.score }
+            sortedSets[key] = zset
+            return .success(addedCount)
+        }
+    }
+    
+    public func zrange(_ key: String, start: Int, stop: Int, withScores: Bool) -> Result<[String], StoreError> {
+        queue.sync {
+            if isExpired(key) {
+                remove(key)
+                return .success([])
+            }
+            if storage[key] != nil || lists[key] != nil || sets[key] != nil || hashes[key] != nil {
+                return .failure(.wrongType)
+            }
+            guard let zset = sortedSets[key] else {
+                return .success([])
+            }
+            
+            let count = zset.count
+            if count == 0 {
+                return .success([])
+            }
+            
+            var startIndex = start
+            var stopIndex = stop
+            
+            if startIndex < 0 { startIndex = count + startIndex }
+            if stopIndex < 0 { stopIndex = count + stopIndex }
+            
+            startIndex = max(startIndex, 0)
+            stopIndex = min(stopIndex, count - 1)
+            
+            if startIndex > stopIndex || startIndex >= count {
+                return .success([])
+            }
+            
+            let slice = zset[startIndex...stopIndex]
+            if withScores {
+                return .success(slice.flatMap { [$0.member, String($0.score)] })
+            } else {
+                return .success(slice.map { $0.member })
+            }
+        }
+    }
+    
+    public func zrank(_ key: String, member: String) -> Result<Int?, StoreError> {
+        queue.sync {
+            if isExpired(key) {
+                remove(key)
+                return .success(nil)
+            }
+            if storage[key] != nil || lists[key] != nil || sets[key] != nil || hashes[key] != nil {
+                return .failure(.wrongType)
+            }
+            guard let zset = sortedSets[key] else {
+                return .success(nil)
+            }
+            if let index = zset.firstIndex(where: { $0.member == member }) {
+                return .success(index)
+            }
+            return .success(nil)
+        }
+    }
+    
+    public func zrem(_ key: String, members: [String]) -> Result<Int, StoreError> {
+        queue.sync {
+            if isExpired(key) {
+                remove(key)
+                return .success(0)
+            }
+            if storage[key] != nil || lists[key] != nil || sets[key] != nil || hashes[key] != nil {
+                return .failure(.wrongType)
+            }
+            guard var zset = sortedSets[key] else {
+                return .success(0)
+            }
+            var removedCount = 0
+            for member in members {
+                if let index = zset.firstIndex(where: { $0.member == member }) {
+                    zset.remove(at: index)
+                    removedCount += 1
+                }
+            }
+            if zset.isEmpty {
+                sortedSets.removeValue(forKey: key)
+            } else {
+                sortedSets[key] = zset
+            }
+            return .success(removedCount)
+        }
+    }
+    
+    public func zscore(_ key: String, member: String) -> Result<Double?, StoreError> {
+        queue.sync {
+            if isExpired(key) {
+                remove(key)
+                return .success(nil)
+            }
+            if storage[key] != nil || lists[key] != nil || sets[key] != nil || hashes[key] != nil {
+                return .failure(.wrongType)
+            }
+            guard let zset = sortedSets[key] else {
+                return .success(nil)
+            }
+            if let entry = zset.first(where: { $0.member == member }) {
+                return .success(entry.score)
+            }
+            return .success(nil)
+        }
+    }
+    
+    public func zcard(_ key: String) -> Result<Int, StoreError> {
+        queue.sync {
+            if isExpired(key) {
+                remove(key)
+                return .success(0)
+            }
+            if storage[key] != nil || lists[key] != nil || sets[key] != nil || hashes[key] != nil {
+                return .failure(.wrongType)
+            }
+            return .success(sortedSets[key]?.count ?? 0)
+        }
+    }
+
     public func isList(_ key: String) -> Bool {
         queue.sync { lists[key] != nil }
     }
@@ -295,7 +723,7 @@ public final class KeyValueStore: @unchecked Sendable {
     public func keys(pattern: String) -> [String] {
         queue.sync {
             var results: [String] = []
-            let allKeys = Set(storage.keys).union(lists.keys)
+            let allKeys = Set(storage.keys).union(lists.keys).union(sets.keys).union(hashes.keys).union(sortedSets.keys)
 
             for key in allKeys {
                 if isExpired(key) {
@@ -321,6 +749,9 @@ public final class KeyValueStore: @unchecked Sendable {
     private func remove(_ key: String) {
         storage.removeValue(forKey: key)
         lists.removeValue(forKey: key)
+        sets.removeValue(forKey: key)
+        hashes.removeValue(forKey: key)
+        sortedSets.removeValue(forKey: key)
         expiries.removeValue(forKey: key)
     }
 
@@ -344,7 +775,7 @@ public final class KeyValueStore: @unchecked Sendable {
 
     private func globToRegex(_ pattern: String) -> String {
         var result = ""
-        var chars = Array(pattern)
+        let chars = Array(pattern)
         var index = 0
         var escaping = false
 

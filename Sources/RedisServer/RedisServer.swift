@@ -219,6 +219,247 @@ final class RedisHandler: ChannelInboundHandler, @unchecked Sendable {
             }
             let keys = store.keys(pattern: pattern)
             return RespResponse(data: RespEncoder.array(keys.map { Optional($0) }), closeConnection: false)
+        case "SADD":
+            guard args.count >= 2 else {
+                return wrongArgs("sadd")
+            }
+            let key = args[0]
+            let members = Array(args.dropFirst())
+            switch store.sadd(key, members: members) {
+            case .success(let count):
+                return RespResponse(data: RespEncoder.integer(count), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
+        case "SMEMBERS":
+            guard let key = args.first else {
+                return wrongArgs("smembers")
+            }
+            switch store.smembers(key) {
+            case .success(let members):
+                return RespResponse(data: RespEncoder.array(members.map { Optional($0) }), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
+        case "SISMEMBER":
+            guard args.count >= 2 else {
+                return wrongArgs("sismember")
+            }
+            switch store.sismember(args[0], member: args[1]) {
+            case .success(let exists):
+                return RespResponse(data: RespEncoder.integer(exists ? 1 : 0), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
+        case "SREM":
+            guard args.count >= 2 else {
+                return wrongArgs("srem")
+            }
+            let key = args[0]
+            let members = Array(args.dropFirst())
+            switch store.srem(key, members: members) {
+            case .success(let count):
+                return RespResponse(data: RespEncoder.integer(count), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
+        case "SINTER":
+            guard !args.isEmpty else {
+                return wrongArgs("sinter")
+            }
+            switch store.sinter(args) {
+            case .success(let members):
+                return RespResponse(data: RespEncoder.array(members.map { Optional($0) }), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
+        case "SUNION":
+            guard !args.isEmpty else {
+                return wrongArgs("sunion")
+            }
+            switch store.sunion(args) {
+            case .success(let members):
+                return RespResponse(data: RespEncoder.array(members.map { Optional($0) }), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
+        case "SCARD":
+            guard let key = args.first else {
+                return wrongArgs("scard")
+            }
+            switch store.scard(key) {
+            case .success(let count):
+                return RespResponse(data: RespEncoder.integer(count), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
+        case "HSET":
+            guard args.count >= 3 else {
+                return wrongArgs("hset")
+            }
+            switch store.hset(args[0], field: args[1], value: args[2]) {
+            case .success(let count):
+                return RespResponse(data: RespEncoder.integer(count), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
+        case "HGET":
+            guard args.count >= 2 else {
+                return wrongArgs("hget")
+            }
+            switch store.hget(args[0], field: args[1]) {
+            case .success(let value):
+                return RespResponse(data: RespEncoder.bulk(value), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
+        case "HDEL":
+            guard args.count >= 2 else {
+                return wrongArgs("hdel")
+            }
+            let key = args[0]
+            let fields = Array(args.dropFirst())
+            switch store.hdel(key, fields: fields) {
+            case .success(let count):
+                return RespResponse(data: RespEncoder.integer(count), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
+        case "HEXISTS":
+            guard args.count >= 2 else {
+                return wrongArgs("hexists")
+            }
+            switch store.hexists(args[0], field: args[1]) {
+            case .success(let exists):
+                return RespResponse(data: RespEncoder.integer(exists ? 1 : 0), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
+        case "HGETALL":
+            guard let key = args.first else {
+                return wrongArgs("hgetall")
+            }
+            switch store.hgetall(key) {
+            case .success(let pairs):
+                let flattened = pairs.flatMap { [$0.0, $0.1] }
+                return RespResponse(data: RespEncoder.array(flattened.map { Optional($0) }), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
+        case "HKEYS":
+            guard let key = args.first else {
+                return wrongArgs("hkeys")
+            }
+            switch store.hkeys(key) {
+            case .success(let keys):
+                return RespResponse(data: RespEncoder.array(keys.map { Optional($0) }), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
+        case "HVALS":
+            guard let key = args.first else {
+                return wrongArgs("hvals")
+            }
+            switch store.hvals(key) {
+            case .success(let values):
+                return RespResponse(data: RespEncoder.array(values.map { Optional($0) }), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
+        case "HLEN":
+            guard let key = args.first else {
+                return wrongArgs("hlen")
+            }
+            switch store.hlen(key) {
+            case .success(let count):
+                return RespResponse(data: RespEncoder.integer(count), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
+        case "ZADD":
+            guard args.count >= 3, args.count % 2 == 1 else {
+                return wrongArgs("zadd")
+            }
+            let key = args[0]
+            var members: [(Double, String)] = []
+            var index = 1
+            while index < args.count {
+                guard let score = Double(args[index]) else {
+                    return RespResponse(data: RespEncoder.error("value is not a valid float"), closeConnection: false)
+                }
+                members.append((score, args[index + 1]))
+                index += 2
+            }
+            switch store.zadd(key, members: members) {
+            case .success(let count):
+                return RespResponse(data: RespEncoder.integer(count), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
+        case "ZRANGE":
+            guard args.count >= 3 else {
+                return wrongArgs("zrange")
+            }
+            guard let start = Int(args[1]), let stop = Int(args[2]) else {
+                return RespResponse(data: RespEncoder.error("value is not an integer or out of range"), closeConnection: false)
+            }
+            let withScores = args.count >= 4 && args[3].uppercased() == "WITHSCORES"
+            switch store.zrange(args[0], start: start, stop: stop, withScores: withScores) {
+            case .success(let members):
+                return RespResponse(data: RespEncoder.array(members.map { Optional($0) }), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
+        case "ZRANK":
+            guard args.count >= 2 else {
+                return wrongArgs("zrank")
+            }
+            switch store.zrank(args[0], member: args[1]) {
+            case .success(let rank):
+                if let rank {
+                    return RespResponse(data: RespEncoder.integer(rank), closeConnection: false)
+                } else {
+                    return RespResponse(data: RespEncoder.bulk(nil), closeConnection: false)
+                }
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
+        case "ZREM":
+            guard args.count >= 2 else {
+                return wrongArgs("zrem")
+            }
+            let key = args[0]
+            let members = Array(args.dropFirst())
+            switch store.zrem(key, members: members) {
+            case .success(let count):
+                return RespResponse(data: RespEncoder.integer(count), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
+        case "ZSCORE":
+            guard args.count >= 2 else {
+                return wrongArgs("zscore")
+            }
+            switch store.zscore(args[0], member: args[1]) {
+            case .success(let score):
+                if let score {
+                    return RespResponse(data: RespEncoder.bulk(String(score)), closeConnection: false)
+                } else {
+                    return RespResponse(data: RespEncoder.bulk(nil), closeConnection: false)
+                }
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
+        case "ZCARD":
+            guard let key = args.first else {
+                return wrongArgs("zcard")
+            }
+            switch store.zcard(key) {
+            case .success(let count):
+                return RespResponse(data: RespEncoder.integer(count), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
         case "QUIT":
             return RespResponse(data: RespEncoder.simple("OK"), closeConnection: true)
         default:
