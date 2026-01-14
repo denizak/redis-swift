@@ -13,17 +13,21 @@ public struct RespResponse: Sendable {
 
 public enum StoreError: Error {
     case nonInteger
+    case wrongType
 
     public var message: String {
         switch self {
         case .nonInteger:
             return "value is not an integer or out of range"
+        case .wrongType:
+            return "wrong type"
         }
     }
 }
 
 public final class KeyValueStore: @unchecked Sendable {
     private var storage: [String: String] = [:]
+    private var lists: [String: [String]] = [:]
     private var expiries: [String: Date] = [:]
     private let queue = DispatchQueue(label: "redis-swift.store")
 
@@ -42,6 +46,7 @@ public final class KeyValueStore: @unchecked Sendable {
     public func set(_ key: String, value: String) {
         queue.sync {
             storage[key] = value
+            lists.removeValue(forKey: key)
             expiries.removeValue(forKey: key)
         }
     }
@@ -49,8 +54,9 @@ public final class KeyValueStore: @unchecked Sendable {
     public func del(_ key: String) -> Int {
         queue.sync {
             let removed = storage.removeValue(forKey: key)
+            let removedList = lists.removeValue(forKey: key)
             expiries.removeValue(forKey: key)
-            return removed != nil ? 1 : 0
+            return (removed != nil || removedList != nil) ? 1 : 0
         }
     }
 
@@ -60,7 +66,7 @@ public final class KeyValueStore: @unchecked Sendable {
                 remove(key)
                 return 0
             }
-            return storage[key] == nil ? 0 : 1
+            return (storage[key] == nil && lists[key] == nil) ? 0 : 1
         }
     }
 
@@ -68,6 +74,9 @@ public final class KeyValueStore: @unchecked Sendable {
         queue.sync {
             if isExpired(key) {
                 remove(key)
+            }
+            if lists[key] != nil {
+                return .failure(.wrongType)
             }
             let current = storage[key] ?? "0"
             guard let number = Int(current) else {
@@ -85,7 +94,7 @@ public final class KeyValueStore: @unchecked Sendable {
                 remove(key)
                 return 0
             }
-            guard storage[key] != nil else {
+            guard storage[key] != nil || lists[key] != nil else {
                 return 0
             }
             if seconds <= 0 {
@@ -103,7 +112,7 @@ public final class KeyValueStore: @unchecked Sendable {
                 remove(key)
                 return -2
             }
-            guard storage[key] != nil else {
+            guard storage[key] != nil || lists[key] != nil else {
                 return -2
             }
             guard let expiry = expiries[key] else {
@@ -118,6 +127,7 @@ public final class KeyValueStore: @unchecked Sendable {
         queue.sync {
             for (key, value) in pairs {
                 storage[key] = value
+                lists.removeValue(forKey: key)
                 expiries.removeValue(forKey: key)
             }
         }
@@ -130,9 +140,69 @@ public final class KeyValueStore: @unchecked Sendable {
                     remove(key)
                     return nil
                 }
+                if lists[key] != nil {
+                    return nil
+                }
                 return storage[key]
             }
         }
+    }
+
+    public func lpush(_ key: String, values: [String]) -> Result<Int, StoreError> {
+        queue.sync {
+            if isExpired(key) {
+                remove(key)
+            }
+            if storage[key] != nil {
+                return .failure(.wrongType)
+            }
+            var list = lists[key] ?? []
+            for value in values {
+                list.insert(value, at: 0)
+            }
+            lists[key] = list
+            return .success(list.count)
+        }
+    }
+
+    public func lrange(_ key: String, start: Int, stop: Int) -> Result<[String], StoreError> {
+        queue.sync {
+            if isExpired(key) {
+                remove(key)
+                return .success([])
+            }
+            if storage[key] != nil {
+                return .failure(.wrongType)
+            }
+            guard let list = lists[key] else {
+                return .success([])
+            }
+
+            let count = list.count
+            if count == 0 {
+                return .success([])
+            }
+
+            var startIndex = start
+            var stopIndex = stop
+
+            if startIndex < 0 { startIndex = count + startIndex }
+            if stopIndex < 0 { stopIndex = count + stopIndex }
+
+            startIndex = max(startIndex, 0)
+            stopIndex = min(stopIndex, count - 1)
+
+            if startIndex > stopIndex || startIndex >= count {
+                return .success([])
+            }
+
+            let slice = list[startIndex...stopIndex]
+            return .success(Array(slice))
+        }
+    }
+
+    public func isList(_ key: String) -> Bool {
+        queue.sync { lists[key] != nil }
     }
 
     private func isExpired(_ key: String) -> Bool {
@@ -144,6 +214,7 @@ public final class KeyValueStore: @unchecked Sendable {
 
     private func remove(_ key: String) {
         storage.removeValue(forKey: key)
+        lists.removeValue(forKey: key)
         expiries.removeValue(forKey: key)
     }
 }
@@ -384,6 +455,9 @@ public final class Client: @unchecked Sendable {
             guard let key = args.first else {
                 return RespResponse(data: RespEncoder.error("wrong number of arguments for 'get' command"), closeConnection: false)
             }
+            if store.isList(key) {
+                return RespResponse(data: RespEncoder.error(StoreError.wrongType.message), closeConnection: false)
+            }
             return RespResponse(data: RespEncoder.bulk(store.get(key)), closeConnection: false)
         case "DEL":
             guard let key = args.first else {
@@ -436,6 +510,31 @@ public final class Client: @unchecked Sendable {
                 return RespResponse(data: RespEncoder.error("wrong number of arguments for 'mget' command"), closeConnection: false)
             }
             return RespResponse(data: RespEncoder.array(store.mget(args)), closeConnection: false)
+        case "LPUSH":
+            guard args.count >= 2 else {
+                return RespResponse(data: RespEncoder.error("wrong number of arguments for 'lpush' command"), closeConnection: false)
+            }
+            let key = args[0]
+            let values = Array(args.dropFirst())
+            switch store.lpush(key, values: values) {
+            case .success(let count):
+                return RespResponse(data: RespEncoder.integer(count), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
+        case "LRANGE":
+            guard args.count >= 3 else {
+                return RespResponse(data: RespEncoder.error("wrong number of arguments for 'lrange' command"), closeConnection: false)
+            }
+            guard let start = Int(args[1]), let stop = Int(args[2]) else {
+                return RespResponse(data: RespEncoder.error("value is not an integer or out of range"), closeConnection: false)
+            }
+            switch store.lrange(args[0], start: start, stop: stop) {
+            case .success(let values):
+                return RespResponse(data: RespEncoder.array(values.map { Optional($0) }), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
         case "QUIT":
             return RespResponse(data: RespEncoder.simple("OK"), closeConnection: true)
         default:
