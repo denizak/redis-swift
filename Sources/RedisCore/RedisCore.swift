@@ -24,6 +24,11 @@ public enum StoreError: Error {
     }
 }
 
+public enum SetExpiry: Sendable {
+    case seconds(Int)
+    case milliseconds(Int)
+}
+
 public final class KeyValueStore: @unchecked Sendable {
     private var storage: [String: String] = [:]
     private var lists: [String: [String]] = [:]
@@ -50,26 +55,81 @@ public final class KeyValueStore: @unchecked Sendable {
         }
     }
 
-    public func del(_ key: String) -> Int {
+    public func set(_ key: String, value: String, expiry: SetExpiry?) {
         queue.sync {
-            let removed = storage.removeValue(forKey: key)
-            let removedList = lists.removeValue(forKey: key)
+            storage[key] = value
+            lists.removeValue(forKey: key)
             expiries.removeValue(forKey: key)
-            return (removed != nil || removedList != nil) ? 1 : 0
+
+            if let expiry {
+                let deadline: Date
+                switch expiry {
+                case .seconds(let seconds):
+                    deadline = Date().addingTimeInterval(TimeInterval(seconds))
+                case .milliseconds(let milliseconds):
+                    deadline = Date().addingTimeInterval(TimeInterval(milliseconds) / 1000)
+                }
+                expiries[key] = deadline
+            }
+        }
+    }
+
+    public func del(_ key: String) -> Int {
+        del([key])
+    }
+
+    public func del(_ keys: [String]) -> Int {
+        queue.sync {
+            var removedCount = 0
+            for key in keys {
+                let removed = storage.removeValue(forKey: key)
+                let removedList = lists.removeValue(forKey: key)
+                expiries.removeValue(forKey: key)
+                if removed != nil || removedList != nil {
+                    removedCount += 1
+                }
+            }
+            return removedCount
         }
     }
 
     public func exists(_ key: String) -> Int {
+        exists([key])
+    }
+
+    public func exists(_ keys: [String]) -> Int {
         queue.sync {
-            if isExpired(key) {
-                remove(key)
-                return 0
+            var count = 0
+            for key in keys {
+                if isExpired(key) {
+                    remove(key)
+                    continue
+                }
+                if storage[key] != nil || lists[key] != nil {
+                    count += 1
+                }
             }
-            return (storage[key] == nil && lists[key] == nil) ? 0 : 1
+            return count
         }
     }
 
     public func incr(_ key: String) -> Result<Int, StoreError> {
+        increment(key, by: 1)
+    }
+
+    public func incrBy(_ key: String, amount: Int) -> Result<Int, StoreError> {
+        increment(key, by: amount)
+    }
+
+    public func decr(_ key: String) -> Result<Int, StoreError> {
+        increment(key, by: -1)
+    }
+
+    public func decrBy(_ key: String, amount: Int) -> Result<Int, StoreError> {
+        increment(key, by: -amount)
+    }
+
+    private func increment(_ key: String, by amount: Int) -> Result<Int, StoreError> {
         queue.sync {
             if isExpired(key) {
                 remove(key)
@@ -81,7 +141,7 @@ public final class KeyValueStore: @unchecked Sendable {
             guard let number = Int(current) else {
                 return .failure(.nonInteger)
             }
-            let next = number + 1
+            let next = number + amount
             storage[key] = String(next)
             return .success(next)
         }
@@ -164,6 +224,34 @@ public final class KeyValueStore: @unchecked Sendable {
         }
     }
 
+    public func rpush(_ key: String, values: [String]) -> Result<Int, StoreError> {
+        queue.sync {
+            if isExpired(key) {
+                remove(key)
+            }
+            if storage[key] != nil {
+                return .failure(.wrongType)
+            }
+            var list = lists[key] ?? []
+            list.append(contentsOf: values)
+            lists[key] = list
+            return .success(list.count)
+        }
+    }
+
+    public func llen(_ key: String) -> Result<Int, StoreError> {
+        queue.sync {
+            if isExpired(key) {
+                remove(key)
+                return .success(0)
+            }
+            if storage[key] != nil {
+                return .failure(.wrongType)
+            }
+            return .success(lists[key]?.count ?? 0)
+        }
+    }
+
     public func lrange(_ key: String, start: Int, stop: Int) -> Result<[String], StoreError> {
         queue.sync {
             if isExpired(key) {
@@ -241,19 +329,101 @@ public final class KeyValueStore: @unchecked Sendable {
             return true
         }
 
-        if !pattern.contains("*") {
+        if !pattern.contains("*") && !pattern.contains("?") && !pattern.contains("[") {
             return pattern == key
         }
 
-        let escaped = NSRegularExpression.escapedPattern(for: pattern)
-            .replacingOccurrences(of: "\\*", with: ".*")
-        let regexPattern = "^" + escaped + "$"
+        let regexPattern = "^" + globToRegex(pattern) + "$"
 
         guard let regex = try? NSRegularExpression(pattern: regexPattern) else {
             return false
         }
         let range = NSRange(key.startIndex..<key.endIndex, in: key)
         return regex.firstMatch(in: key, range: range) != nil
+    }
+
+    private func globToRegex(_ pattern: String) -> String {
+        var result = ""
+        var chars = Array(pattern)
+        var index = 0
+        var escaping = false
+
+        while index < chars.count {
+            let char = chars[index]
+
+            if escaping {
+                result.append(NSRegularExpression.escapedPattern(for: String(char)))
+                escaping = false
+                index += 1
+                continue
+            }
+
+            if char == "\\" {
+                escaping = true
+                index += 1
+                continue
+            }
+
+            switch char {
+            case "*":
+                result.append(".*")
+            case "?":
+                result.append(".")
+            case "[":
+                if let (classPattern, advance) = parseCharacterClass(chars, start: index) {
+                    result.append(classPattern)
+                    index += advance
+                    continue
+                } else {
+                    result.append("\\[")
+                }
+            default:
+                result.append(NSRegularExpression.escapedPattern(for: String(char)))
+            }
+
+            index += 1
+        }
+
+        if escaping {
+            result.append("\\\\")
+        }
+
+        return result
+    }
+
+    private func parseCharacterClass(_ chars: [Character], start: Int) -> (String, Int)? {
+        guard start < chars.count, chars[start] == "[" else {
+            return nil
+        }
+
+        var index = start + 1
+        if index >= chars.count {
+            return nil
+        }
+
+        var negate = false
+        if chars[index] == "!" {
+            negate = true
+            index += 1
+        }
+
+        var classContent = ""
+        while index < chars.count {
+            let char = chars[index]
+            if char == "]" {
+                let prefix = negate ? "[^" : "["
+                return (prefix + classContent + "]", index - start + 1)
+            }
+
+            if "\\^-".contains(char) {
+                classContent.append("\\" + String(char))
+            } else {
+                classContent.append(char)
+            }
+            index += 1
+        }
+
+        return nil
     }
 }
 

@@ -2,7 +2,7 @@ import Foundation
 import NIO
 import RedisCore
 
-final class RedisHandler: ChannelInboundHandler {
+final class RedisHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = ByteBuffer
     typealias OutboundOut = ByteBuffer
 
@@ -49,36 +49,47 @@ final class RedisHandler: ChannelInboundHandler {
             return RespResponse(data: RespEncoder.simple("PONG"), closeConnection: false)
         case "ECHO":
             guard let message = args.first else {
-                return RespResponse(data: RespEncoder.error("wrong number of arguments for 'echo' command"), closeConnection: false)
+                return wrongArgs("echo")
             }
             return RespResponse(data: RespEncoder.bulk(message), closeConnection: false)
         case "SET":
             guard args.count >= 2 else {
-                return RespResponse(data: RespEncoder.error("wrong number of arguments for 'set' command"), closeConnection: false)
+                return wrongArgs("set")
             }
-            store.set(args[0], value: args[1])
+
+            let key = args[0]
+            let value = args[1]
+            let options = Array(args.dropFirst(2))
+
+            switch parseSetOptions(options) {
+            case .success(let expiry):
+                store.set(key, value: value, expiry: expiry)
+            case .failure(let errorMessage):
+                return RespResponse(data: RespEncoder.error(errorMessage), closeConnection: false)
+            }
+
             return RespResponse(data: RespEncoder.simple("OK"), closeConnection: false)
         case "GET":
             guard let key = args.first else {
-                return RespResponse(data: RespEncoder.error("wrong number of arguments for 'get' command"), closeConnection: false)
+                return wrongArgs("get")
             }
             if store.isList(key) {
                 return RespResponse(data: RespEncoder.error(StoreError.wrongType.message), closeConnection: false)
             }
             return RespResponse(data: RespEncoder.bulk(store.get(key)), closeConnection: false)
         case "DEL":
-            guard let key = args.first else {
-                return RespResponse(data: RespEncoder.error("wrong number of arguments for 'del' command"), closeConnection: false)
+            guard !args.isEmpty else {
+                return wrongArgs("del")
             }
-            return RespResponse(data: RespEncoder.integer(store.del(key)), closeConnection: false)
+            return RespResponse(data: RespEncoder.integer(store.del(args)), closeConnection: false)
         case "EXISTS":
-            guard let key = args.first else {
-                return RespResponse(data: RespEncoder.error("wrong number of arguments for 'exists' command"), closeConnection: false)
+            guard !args.isEmpty else {
+                return wrongArgs("exists")
             }
-            return RespResponse(data: RespEncoder.integer(store.exists(key)), closeConnection: false)
+            return RespResponse(data: RespEncoder.integer(store.exists(args)), closeConnection: false)
         case "INCR":
             guard let key = args.first else {
-                return RespResponse(data: RespEncoder.error("wrong number of arguments for 'incr' command"), closeConnection: false)
+                return wrongArgs("incr")
             }
             switch store.incr(key) {
             case .success(let value):
@@ -86,9 +97,45 @@ final class RedisHandler: ChannelInboundHandler {
             case .failure(let error):
                 return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
             }
+        case "INCRBY":
+            guard args.count >= 2 else {
+                return wrongArgs("incrby")
+            }
+            guard let amount = Int(args[1]) else {
+                return RespResponse(data: RespEncoder.error("value is not an integer or out of range"), closeConnection: false)
+            }
+            switch store.incrBy(args[0], amount: amount) {
+            case .success(let value):
+                return RespResponse(data: RespEncoder.integer(value), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
+        case "DECR":
+            guard let key = args.first else {
+                return wrongArgs("decr")
+            }
+            switch store.decr(key) {
+            case .success(let value):
+                return RespResponse(data: RespEncoder.integer(value), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
+        case "DECRBY":
+            guard args.count >= 2 else {
+                return wrongArgs("decrby")
+            }
+            guard let amount = Int(args[1]) else {
+                return RespResponse(data: RespEncoder.error("value is not an integer or out of range"), closeConnection: false)
+            }
+            switch store.decrBy(args[0], amount: amount) {
+            case .success(let value):
+                return RespResponse(data: RespEncoder.integer(value), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
         case "EXPIRE":
             guard args.count >= 2 else {
-                return RespResponse(data: RespEncoder.error("wrong number of arguments for 'expire' command"), closeConnection: false)
+                return wrongArgs("expire")
             }
             guard let seconds = Int(args[1]) else {
                 return RespResponse(data: RespEncoder.error("value is not an integer or out of range"), closeConnection: false)
@@ -96,12 +143,12 @@ final class RedisHandler: ChannelInboundHandler {
             return RespResponse(data: RespEncoder.integer(store.expire(args[0], seconds: seconds)), closeConnection: false)
         case "TTL":
             guard let key = args.first else {
-                return RespResponse(data: RespEncoder.error("wrong number of arguments for 'ttl' command"), closeConnection: false)
+                return wrongArgs("ttl")
             }
             return RespResponse(data: RespEncoder.integer(store.ttl(key)), closeConnection: false)
         case "MSET":
             guard args.count >= 2, args.count % 2 == 0 else {
-                return RespResponse(data: RespEncoder.error("wrong number of arguments for 'mset' command"), closeConnection: false)
+                return wrongArgs("mset")
             }
             var pairs: [(String, String)] = []
             pairs.reserveCapacity(args.count / 2)
@@ -114,12 +161,12 @@ final class RedisHandler: ChannelInboundHandler {
             return RespResponse(data: RespEncoder.simple("OK"), closeConnection: false)
         case "MGET":
             guard !args.isEmpty else {
-                return RespResponse(data: RespEncoder.error("wrong number of arguments for 'mget' command"), closeConnection: false)
+                return wrongArgs("mget")
             }
             return RespResponse(data: RespEncoder.array(store.mget(args)), closeConnection: false)
         case "LPUSH":
             guard args.count >= 2 else {
-                return RespResponse(data: RespEncoder.error("wrong number of arguments for 'lpush' command"), closeConnection: false)
+                return wrongArgs("lpush")
             }
             let key = args[0]
             let values = Array(args.dropFirst())
@@ -129,9 +176,31 @@ final class RedisHandler: ChannelInboundHandler {
             case .failure(let error):
                 return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
             }
+        case "RPUSH":
+            guard args.count >= 2 else {
+                return wrongArgs("rpush")
+            }
+            let key = args[0]
+            let values = Array(args.dropFirst())
+            switch store.rpush(key, values: values) {
+            case .success(let count):
+                return RespResponse(data: RespEncoder.integer(count), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
+        case "LLEN":
+            guard let key = args.first else {
+                return wrongArgs("llen")
+            }
+            switch store.llen(key) {
+            case .success(let count):
+                return RespResponse(data: RespEncoder.integer(count), closeConnection: false)
+            case .failure(let error):
+                return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
+            }
         case "LRANGE":
             guard args.count >= 3 else {
-                return RespResponse(data: RespEncoder.error("wrong number of arguments for 'lrange' command"), closeConnection: false)
+                return wrongArgs("lrange")
             }
             guard let start = Int(args[1]), let stop = Int(args[2]) else {
                 return RespResponse(data: RespEncoder.error("value is not an integer or out of range"), closeConnection: false)
@@ -144,7 +213,7 @@ final class RedisHandler: ChannelInboundHandler {
             }
         case "KEYS":
             guard let pattern = args.first else {
-                return RespResponse(data: RespEncoder.error("wrong number of arguments for 'keys' command"), closeConnection: false)
+                return wrongArgs("keys")
             }
             let keys = store.keys(pattern: pattern)
             return RespResponse(data: RespEncoder.array(keys.map { Optional($0) }), closeConnection: false)
@@ -153,6 +222,37 @@ final class RedisHandler: ChannelInboundHandler {
         default:
             return RespResponse(data: RespEncoder.error("unknown command '\(head)'"), closeConnection: false)
         }
+    }
+
+    private func wrongArgs(_ name: String) -> RespResponse {
+        RespResponse(data: RespEncoder.error("wrong number of arguments for '\(name)' command"), closeConnection: false)
+    }
+
+    private func parseSetOptions(_ options: [String]) -> Result<SetExpiry?, String> {
+        guard !options.isEmpty else {
+            return .success(nil)
+        }
+
+        var expiry: SetExpiry?
+        var index = 0
+        while index < options.count {
+            let option = options[index].uppercased()
+            switch option {
+            case "EX", "PX":
+                guard index + 1 < options.count else {
+                    return .failure("syntax error")
+                }
+                guard let value = Int(options[index + 1]), value > 0 else {
+                    return .failure("invalid expire time in set")
+                }
+                expiry = option == "EX" ? .seconds(value) : .milliseconds(value)
+                index += 2
+            default:
+                return .failure("syntax error")
+            }
+        }
+
+        return .success(expiry)
     }
 
     private func send(_ response: RespResponse, context: ChannelHandlerContext) {
@@ -183,8 +283,10 @@ public enum Server {
                 .childChannelOption(ChannelOptions.maxMessagesPerRead, value: 16)
 
             let channel = try bootstrap.bind(host: host, port: port).wait()
+            let signalSources = installShutdownSignals(channel: channel)
             print("mini-redis server listening on \(host):\(port)")
             try channel.closeFuture.wait()
+            signalSources.forEach { $0.cancel() }
         } catch {
             print("failed to start server: \(error)")
         }
@@ -194,5 +296,22 @@ public enum Server {
         } catch {
             print("failed to shutdown event loop: \(error)")
         }
+    }
+
+    private static func installShutdownSignals(channel: Channel) -> [DispatchSourceSignal] {
+        signal(SIGINT, SIG_IGN)
+        signal(SIGTERM, SIG_IGN)
+
+        let queue = DispatchQueue(label: "redis-swift.signal")
+        let makeSource: (Int32) -> DispatchSourceSignal = { signal in
+            let source = DispatchSource.makeSignalSource(signal: signal, queue: queue)
+            source.setEventHandler {
+                channel.close(promise: nil)
+            }
+            source.resume()
+            return source
+        }
+
+        return [makeSource(SIGINT), makeSource(SIGTERM)]
     }
 }
