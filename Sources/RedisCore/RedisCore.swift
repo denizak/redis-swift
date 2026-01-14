@@ -205,6 +205,25 @@ public final class KeyValueStore: @unchecked Sendable {
         queue.sync { lists[key] != nil }
     }
 
+    public func keys(pattern: String) -> [String] {
+        queue.sync {
+            var results: [String] = []
+            let allKeys = Set(storage.keys).union(lists.keys)
+
+            for key in allKeys {
+                if isExpired(key) {
+                    remove(key)
+                    continue
+                }
+                if matchesPattern(pattern, key: key) {
+                    results.append(key)
+                }
+            }
+
+            return results.sorted()
+        }
+    }
+
     private func isExpired(_ key: String) -> Bool {
         guard let expiry = expiries[key] else {
             return false
@@ -216,6 +235,26 @@ public final class KeyValueStore: @unchecked Sendable {
         storage.removeValue(forKey: key)
         lists.removeValue(forKey: key)
         expiries.removeValue(forKey: key)
+    }
+
+    private func matchesPattern(_ pattern: String, key: String) -> Bool {
+        if pattern == "*" {
+            return true
+        }
+
+        if !pattern.contains("*") {
+            return pattern == key
+        }
+
+        let escaped = NSRegularExpression.escapedPattern(for: pattern)
+            .replacingOccurrences(of: "\\*", with: ".*")
+        let regexPattern = "^" + escaped + "$"
+
+        guard let regex = try? NSRegularExpression(pattern: regexPattern) else {
+            return false
+        }
+        let range = NSRange(key.startIndex..<key.endIndex, in: key)
+        return regex.firstMatch(in: key, range: range) != nil
     }
 }
 
@@ -535,6 +574,12 @@ public final class Client: @unchecked Sendable {
             case .failure(let error):
                 return RespResponse(data: RespEncoder.error(error.message), closeConnection: false)
             }
+        case "KEYS":
+            guard let pattern = args.first else {
+                return RespResponse(data: RespEncoder.error("wrong number of arguments for 'keys' command"), closeConnection: false)
+            }
+            let keys = store.keys(pattern: pattern)
+            return RespResponse(data: RespEncoder.array(keys.map { Optional($0) }), closeConnection: false)
         case "QUIT":
             return RespResponse(data: RespEncoder.simple("OK"), closeConnection: true)
         default:

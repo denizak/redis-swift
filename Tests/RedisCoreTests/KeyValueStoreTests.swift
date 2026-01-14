@@ -59,4 +59,25 @@ final class KeyValueStoreTests: XCTestCase {
             XCTFail("unexpected error: \(error)")
         }
     }
+
+    func testKeysReturnsAllKeys() {
+        let store = KeyValueStore()
+
+        store.set("alpha", value: "1")
+        _ = store.lpush("list", values: ["x"])
+        store.set("beta", value: "2")
+
+        let keys = store.keys(pattern: "*")
+        XCTAssertEqual(keys, ["alpha", "beta", "list"])
+    }
+
+    func testKeysExactMatch() {
+        let store = KeyValueStore()
+
+        store.set("alpha", value: "1")
+        store.set("beta", value: "2")
+
+        let keys = store.keys(pattern: "alpha")
+        XCTAssertEqual(keys, ["alpha"])
+    }
 }
